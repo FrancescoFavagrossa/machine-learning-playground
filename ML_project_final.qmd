@@ -1,0 +1,1009 @@
+---
+title: "ML Project"
+author: "CR, CT, FF"
+format: html
+editor: visual
+---
+
+# ML PROJECT
+
+```{r}
+
+set.seed(1)
+O_DS <- readRDS("/Users/francescofavagrossa/Desktop/Machine Learning/ML Project/Dataset/TicTacToe_dataset.RDS")
+library(caTools); library(caret); library(corrplot); library(DiceKriging); library(dplyr)
+library(e1071); library(factoextra); library(farff); library(GauPro); library(ggplot2)
+library(gridExtra); library(mlr); library(mlrMBO); library(parallelMap); library(tibble)
+library(tidyverse); library(glmnet); library(tidyr)
+```
+
+## 1. Analisi esplorativa e preparazione dei dati
+
+```{r}
+
+colSums(is.na(O_DS))
+ttcorr <- cor(O_DS)
+corrplot(ttcorr, method = "circle", type = "upper", 
+         order = "hclust", tl.col = "black", tl.srt = 45, 
+         title = "Features Correlations Matrix ", mar=c(0,0,1,0))
+matrice_correlazione <- cor(O_DS)
+
+dati_corr_long <- matrice_correlazione %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Var1") %>%
+  pivot_longer(
+    cols = -Var1,
+    names_to = "Var2",
+    values_to = "Correlation"
+  )
+dati_corr_long$Var1 <- factor(dati_corr_long$Var1, levels = unique(dati_corr_long$Var1))
+dati_corr_long$Var2 <- factor(dati_corr_long$Var2, levels = unique(dati_corr_long$Var2))
+grafico_heatmap <- ggplot(dati_corr_long, 
+                          aes(x = Var1, y = Var2, fill = Correlation)) +
+  
+  geom_tile() + 
+  geom_text(aes(label = round(Correlation, 2)), color = "black", size = 3) +
+  scale_fill_gradient2(
+    low = "skyblue", 
+    high = "skyblue3", 
+    mid = "white",
+    midpoint = 0,
+    limit = c(-1, 1),
+    name = "Correlation"
+  ) +
+  labs(
+    title = "Correlation heatmap for Features and Class",
+    x = "Variable",
+    y = "Variable"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+
+print(grafico_heatmap)
+
+tt_noclass <- O_DS[,1:12]
+pca_result <- prcomp(tt_noclass, center = TRUE, scale. = TRUE) # PCA
+p2 <- fviz_eig(pca_result, addlabels = TRUE, ylim = c(0, 50)) +
+  theme(plot.title = element_text(face = "bold"))
+
+grid.arrange(arrangeGrob(grafico_heatmap, bottom = "(a) Opt. Path "),
+             arrangeGrob(p2, bottom = "(b) Confusion Matrix"), ncol = 2, nrow = 1)
+
+```
+
+## **2. K-Nearest Neighbors**
+
+Trasformiamo la classe in factor e creiamo la divisione in dataset e testset, tenendo conto della distribuzione della variabile target.
+
+```{r}
+ds <- O_DS
+ds$class <- as.factor(ds$class)
+ixs <- createDataPartition(ds$class, time = 1, p = 0.9) 
+dataset <- ds[ixs$Resample1, ] # 90%
+testset <- ds[-ixs$Resample1, ] # 10%. from now on we treat this test set as if it was the set we do not have.
+
+featRengers <- apply(dataset[, -ncol(dataset)], 2, range) 
+
+for( j in 1:ncol(featRengers)){
+  dataset[,j] <- (dataset[,j] - featRengers[1,j])/diff(featRengers[,j])
+}
+
+for( j in 1:ncol(featRengers)){
+  testset[,j] <- (testset[,j] - featRengers[1,j])/diff(featRengers[,j])
+}
+```
+
+### 2.1 Hold-out with
+
+with grid search.
+
+```{r}
+
+k <- seq(from = 1, to = 51, by = 2)
+knn_k <- matrix(ncol = 2, nrow = length(k))
+knn_k[,1] <- t(k)
+
+trnIxs <- createDataPartition(dataset$class, time = 1, p = 0.7)
+
+# Definisco i subset per chiarezza
+train_sub <- dataset[trnIxs$Resample1, -ncol(dataset)]
+valid_sub <- dataset[-trnIxs$Resample1, -ncol(dataset)]
+cl_train_sub <- dataset$class[trnIxs$Resample1]
+cl_valid_sub <- dataset$class[-trnIxs$Resample1]
+
+for(i in 1:length(k)){ 
+  knn <- knn_k[i,1]
+  preds <- knn3Train(train = train_sub, 
+                   test = valid_sub,
+                   cl = cl_train_sub, 
+                   k = knn, 
+                   prob = F, 
+                   use.all = T)
+  
+  knn_k[i,2] <- 1-(mean(cl_valid_sub != preds)) 
+}
+
+knn_df <- data.frame(k_values = knn_k[, 1], accuracy = knn_k[, 2])
+ggplot(knn_df, aes(x = k_values, y = accuracy)) +
+    geom_line(color = "blue") +
+  geom_point(color = "black") +
+  labs(
+    title = "Accuracy for every odd value of k from 1 to 51 using HOLD OUT",
+    x = "k values",
+    y = "accuracy"
+  ) +
+  theme_minimal()
+
+index_opt <- as.numeric(which.max(knn_k[,2]))
+k_opt <- knn_k[index_opt,1]
+
+preds_test <- knn3Train(train = dataset[, -ncol(dataset)], 
+                        test = testset[, -ncol(testset)],
+                        cl = dataset$class, 
+                        k = k_opt, 
+                        prob = FALSE, 
+                        use.all = TRUE)
+preds_test <- factor(preds_test, levels = levels(testset$class))
+
+confMat <- confusionMatrix(preds_test, testset$class)
+conf_mat_df <- as.data.frame(confMat$table)
+colnames(conf_mat_df) <- c("Predicted", "Actual", "Freq")
+
+class_levels <- levels(testset$class) 
+conf_mat_df$Actual    <- factor(conf_mat_df$Actual,    levels = rev(class_levels))
+conf_mat_df$Predicted <- factor(conf_mat_df$Predicted, levels = class_levels)
+
+ggplot(conf_mat_df, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = Freq), size = 8, color = "white") +
+  scale_fill_gradient(low = "skyblue2", high = "darkblue", name = "Freq") +
+  coord_fixed() +
+  scale_x_discrete(labels = c("X.1" = "-1", "X1" = "1")) +
+  scale_y_discrete(labels = c("X1" = "1", "X.1" = "-1")) +
+  labs(
+    title = paste0("Confusion matrix KNN - HOLD OUT (k = ", k_opt, ") - Test Set"),
+    x = "Predicted class",
+    y = "Actual class"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    legend.position = "right")
+```
+
+### 2.2 K-fold cross validation
+
+```{r}
+
+control <- trainControl(method = "repeatedcv",
+                        number = 10,          
+                        repeats = 3,           
+                        classProbs = TRUE,     
+                        summaryFunction = defaultSummary) 
+k_values <-  seq(from = 1, to = 51, by = 2) 
+levels(dataset$class) <- make.names(levels(dataset$class))
+knn_model <- caret::train(class ~ .,         
+                          data = dataset,       
+                          method = "knn",             
+                          tuneGrid = expand.grid(k = k_values), 
+                          trControl = control,        
+                          metric = "Accuracy")  
+miglior_k <- knn_model$bestTune  
+cat("\nIl valore di k ottimale (con la migliore Accuracy) è:", miglior_k$k, "\n")
+knn_results_df <- data.frame(
+  k_values = knn_model$results$k,
+  accuracy = knn_model$results$Accuracy
+)
+ggplot(knn_results_df, aes(x = k_values, y = accuracy)) +
+  geom_line(color = "blue") +
+  geom_point(color = "black") +
+  labs(
+    title = "Accuracy for every odd values of k from 1 to 51 using 10FCV.",
+    x = "k values",
+    y = "accuracy"
+  ) +
+  theme_minimal()
+
+predictions <- predict(knn_model, newdata = testset)
+levels(testset$class) <- make.names(levels(testset$class))
+conf_matrix <- confusionMatrix(predictions, testset$class)
+
+conf_mat_df <- as.data.frame(conf_matrix$table)
+colnames(conf_mat_df) <- c("Predicted", "Actual", "Freq")
+
+class_levels <- levels(testset$class) 
+
+conf_mat_df$Actual <- factor(conf_mat_df$Actual, levels = rev(class_levels))
+conf_mat_df$Predicted <- factor(conf_mat_df$Predicted, levels = class_levels)
+
+ggplot(conf_mat_df, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = Freq), size = 8, color = "white") +
+  scale_fill_gradient(low = "skyblue2", high = "darkblue", name = "Frequenza") +
+  coord_fixed() +
+  scale_x_discrete(labels = c("X.1" = "-1", "X1" = "1")) +
+  scale_y_discrete(labels = c("X1" = "1", "X.1" = "-1")) + 
+  labs(
+    title = paste0("Confusion matrix for KNN - 10FCV (k = ", miglior_k$k, ") - Test Set"),
+    x = "Predicted class",
+    y = "Actual class"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+```
+
+### 2.3 Bo
+
+```{r}
+
+par.set <- makeParamSet(makeIntegerParam("k", lower = 1, upper = 51))
+
+task <- makeClassifTask(data = dataset , target = "class")
+ctrl <- makeMBOControl()
+ctrl <- setMBOControlTermination(ctrl, iters = 30)
+tune.ctrl <- makeTuneControlMBO(mbo.control = ctrl)
+
+lrn <- makeLearner("classif.knn")
+
+# tuning
+run <- tuneParams(
+  learner     = lrn,
+  task        = task,
+  resampling  = cv3,
+  measures    = acc,
+  par.set     = par.set,
+  control     = tune.ctrl,
+  show.info   = TRUE
+)
+
+ys <- getOptPathY(run$opt.path)
+df <- data.frame(
+  iter = seq_along(ys),
+  value = ys,
+  best_so_far = cummax(ys)
+)
+ggplot(df, aes(x = iter)) +
+  geom_line(aes(y = value), color = "gray", linewidth = 1.2) +
+  geom_point(aes(y = value), color = "black", size = 2) +
+  geom_step(aes(y = best_so_far), color = "blue", linewidth = 1.4) +
+  labs(
+    title = "Optimization Path KNN - BO",
+    x = "Iteration",
+    y = "Objective Value"
+  ) +
+  theme_minimal(base_size = 14)
+
+ks_df <- as.data.frame(getOptPathX(run$opt.path))
+iters <- seq_len(nrow(ks_df))
+accs <- getOptPathY(run$opt.path)
+
+dfk <- data.frame(
+  accuracy = ys,
+  k = ks_df$k
+)
+dfk_sorted <- dfk %>% arrange(k)
+
+ggplot(dfk_sorted, aes(x = k)) +
+  geom_line(aes(y = accuracy), color = "blue", linewidth = 1.2) +
+  geom_point(aes(y = accuracy), color = "black", size = 2) +
+  labs(
+    title = "Accuracy for every odd value of k from 1 to 51 using 10FCV. ",
+    x = "Value of K",
+    y = "Accuracy"
+  ) +
+  theme_minimal(base_size = 14)
+
+final_learner <- setHyperPars(lrn, par.vals = run$x)
+final_model <- mlr::train(final_learner, task)
+
+preds <- predict(final_model, 
+                 newdata = testset)$data$response
+
+levels(testset$class) <- make.names(levels(testset$class))
+actual_classes <- testset$class
+
+conf_matrix <- confusionMatrix(preds, actual_classes)
+
+conf_mat_df <- as.data.frame(conf_matrix$table)
+colnames(conf_mat_df) <- c("Predicted", "Actual", "Freq")
+
+current_class_levels <- levels(actual_classes)
+conf_mat_df$Actual <- factor(conf_mat_df$Actual, levels = rev(current_class_levels))
+conf_mat_df$Predicted <- factor(conf_mat_df$Predicted, levels = current_class_levels)
+miglior_k_bo <- run$x$k
+
+ggplot(conf_mat_df, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = Freq), size = 8, color = "white") +
+  # Scala di colore
+  scale_fill_gradient(low = "skyblue2", high = "darkblue", name = "Freq") +
+  coord_fixed() +
+  scale_x_discrete(labels = c("X.1" = "-1", "X1" = "1")) +
+  scale_y_discrete(labels = c("X1" = "1", "X.1" = "-1")) +
+  labs(
+    title = paste0("Confusion matrix KNN - BO (k = ", miglior_k_bo, ") - Test Set"),
+    x = "Predicted class",
+    y = "Actual class"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold"), # Titolo in grassetto
+    legend.position = "right"
+  )
+
+```
+
+## 3. Support Vectors Machine
+
+### 3.1 K-fold cross validation
+
+```{r}
+
+dataset <- ds[ixs$Resample1, ]
+testset <- ds[-ixs$Resample1, ]
+c_values <- 10^(-1:2)   
+gamma_values <- 10^(-2:1)
+
+tuned_mdl <- tune.svm(
+  class ~ .,              
+  data = dataset,        
+  kernel = "radial",     
+  cost = c_values,        
+  gamma = gamma_values,   
+  tunecontrol = tune.control(cross = 10) 
+)
+
+best_C <- tuned_mdl$best.parameters$cost
+best_Gamma <- tuned_mdl$best.parameters$gamma
+
+mdl_final <- svm(
+  class ~ .,              
+  data = dataset,        
+  type = "C-classification",
+  kernel = "radial",      
+  cost = best_C,       
+  gamma = best_Gamma,  
+  scale = FALSE           
+)
+
+preds_test <- predict(mdl_final, testset)
+
+levels(testset$class) <- make.names(levels(testset$class))
+
+levels(preds_test) <- make.names(levels(preds_test)) 
+
+confM_test <- table(Predetto = preds_test, Reale = testset$class)
+print(confM_test)
+
+conf_mat_df <- as.data.frame(confM_test)
+colnames(conf_mat_df) <- c("Predicted", "Actual", "Freq")
+
+class_levels <- levels(testset$class)
+conf_mat_df$Actual<- factor(conf_mat_df$Actual, levels = rev(class_levels))
+conf_mat_df$Predicted <- factor(conf_mat_df$Predicted, levels = class_levels)
+
+ggplot(conf_mat_df, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = Freq), size = 6, color = "white") +
+  scale_fill_gradient(low = "skyblue2", high = "darkblue", name = "Freq") +
+  coord_fixed() +
+  labs(
+    title = paste0("Confusion matrix SVM - CV (Test Set)\n",
+                   "C = ", signif(best_C, 3), " | γ = ", signif(best_Gamma, 3)),
+    x = "Predicted class",
+    y = "Actual class"
+  ) +
+  scale_x_discrete(labels = c("X.1" = "-1", "X1" = "1")) +
+  scale_y_discrete(labels = c("X1" = "1", "X.1" = "-1")) + 
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold"), 
+    legend.position = "right" #
+  )
+```
+
+### 3.2 Bo
+
+```{r}
+task <- makeClassifTask(data = dataset, target = "class")
+
+learner <- makeLearner(
+  "classif.svm",
+  predict.type = "prob"
+)
+
+par.set <- makeParamSet(makeNumericParam("cost", lower = -2, upper = 2, trafo = function(x) 10 ^x),
+                        makeDiscreteParam("kernel", values = c("linear", "radial")),
+                        makeNumericParam("gamma", lower = -4, upper = 4, trafo = function(x) 10 ^x, requires = quote(kernel == "radial")))
+
+ctrl <- makeMBOControl()
+ctrl <- setMBOControlTermination(ctrl, iters = 30)
+tune.ctrl <- makeTuneControlMBO(mbo.control = ctrl) 
+
+run <- tuneParams(learner = learner, 
+                  task = task, 
+                  resampling = cv3, 
+                  measures = acc, 
+                  par.set = par.set, 
+                  control = tune.ctrl)
+
+ys <- getOptPathY(run$opt.path)
+
+df <- data.frame(
+  iter = seq_along(ys),
+  value = ys,
+  best_so_far = cummax(ys)
+)
+
+ggplot(df, aes(x = iter)) +
+  geom_line(aes(y = value), color = "grey", linewidth = 1.2) +
+  geom_point(aes(y = value), color = "black", size = 2) +
+  geom_step(aes(y = best_so_far), color = "blue", linewidth = 1.4) +
+  labs(
+    title = "Optimization Path SVM - BO",
+    x = "Iteration",
+    y = "Objective Value"
+  ) +
+  theme_minimal(base_size = 14)
+
+final_learner <- setHyperPars(learner, par.vals = run$x)
+final_model <- mlr::train(final_learner, task)
+
+preds <- predict(final_model, newdata = testset[,-ncol(testset)])$data$response
+df_preds <- data.frame(Actual = testset$class, Predicted = preds)
+
+levels(df_preds$Actual) <- make.names(levels(df_preds$Actual))
+levels(df_preds$Predicted) <- make.names(levels(df_preds$Predicted))
+
+conf_mat <- table(Predicted = df_preds$Predicted, Actual = df_preds$Actual)
+conf_mat_df <- as.data.frame(conf_mat)
+
+current_levels_actual <- levels(conf_mat_df$Actual)
+current_levels_predicted <- levels(conf_mat_df$Predicted)
+
+conf_mat_df$Actual    <- factor(conf_mat_df$Actual, levels = rev(c("X.1", "X1")))
+conf_mat_df$Predicted <- factor(conf_mat_df$Predicted, levels = c("X.1", "X1"))
+
+
+ggplot(conf_mat_df, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = Freq), size = 8, color = "white") +
+  scale_fill_gradient(low = "skyblue2", high = "darkblue", name = "Freq") + # Aggiunto name
+  coord_fixed() +
+  labs(
+    title = paste0("Confusion matrix SVM - BO (Test Set)\n",
+                   "C = ", round(run$x$cost, 3), " | γ = ", round(run$x$gamma, 3)),
+    x = "Predicted class", 
+    y = "Actual class"
+  ) +
+  scale_x_discrete(labels = c("X.1" = "-1", "X1" = "1")) +
+  scale_y_discrete(labels = c("X1" = "1", "X.1" = "-1")) + 
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+
+svm_model <- getLearnerModel(final_model)
+
+# Numero assoluto di support vectors
+n_sv <- svm_model$tot.nSV
+
+# Numero totale di osservazioni nel training set usato da mlr
+n_train <- getTaskSize(task)
+
+# Percentuale
+perc_sv <- n_sv / n_train * 100
+
+n_sv
+perc_sv
+
+```
+
+## 4. Gaussian Process
+
+```{r}
+set.seed(1)
+dataset <- ds[ixs$Resample1, c(1,2, ncol(ds))]
+testset <- ds[-ixs$Resample1, c(1,2, ncol(ds))]
+
+X_train <- as.matrix(dataset[, -ncol(dataset)]) 
+y_train_factor <- dataset$class
+y_train <- as.numeric(as.character(y_train_factor))  # 1 e -1
+
+test_label <- testset$class
+testset <- testset[,-ncol(testset)]
+X_test <- as.matrix(testset)
+y_test <- as.numeric(as.character(test_label))
+
+kern <- Gaussian$new(D = ncol(X_train))
+gp_model <- GauPro_kernel_model$new(
+  X = X_train,
+  Z = y_train,
+  kernel = kern,
+  verbose = 1
+)
+
+# 5. Predizioni
+test_preds <- gp_model$predict(X_test)
+test_pred_class <- ifelse(test_preds > 0, 1, -1)
+
+# Emp. Error (training)
+train_preds <- gp_model$predict(X_train)
+train_pred_class <- ifelse(train_preds > 0, 1, -1)
+
+# 6. Accuracy
+train_accuracy <- mean(train_pred_class == y_train)
+test_accuracy <- mean(test_pred_class == y_test)
+
+cat("Training Accuracy:", round(train_accuracy, 4), "\n")
+cat("Test Accuracy:", round(test_accuracy, 4), "\n")
+
+accuracy_df <- data.frame(
+  Set = c("Training", "Test"),
+  Accuracy = c(train_accuracy, test_accuracy)
+)
+
+conf_matrix <- t(table(Predicted = y_test, Actual = test_pred_class))
+conf_df <- as.data.frame(conf_matrix)
+
+conf_df$Actual <- factor(conf_df$Actual, levels = c(1, -1))
+conf_df$Predicted <- factor(conf_df$Predicted, levels = c(-1, 1))
+
+ggplot(conf_df, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = Freq), size = 8, color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue", name = "Freq") +
+  coord_fixed() +
+  labs(
+    title = "Confuson Matrix GP (Test Set)",
+    x = "Predicted Class",
+    y = "Actual class"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+gp_model$kernel$beta
+```
+
+## 5. Random Forest
+
+```{r}
+
+
+
+data <- read.csv('/Users/francescofavagrossa/Desktop/PM.csv')
+
+target <- read.csv('/Users/francescofavagrossa/Desktop/Buono_scarto.csv')
+
+data_final <- cbind(data, target)
+
+
+task <- makeClassifTask(
+  id = "binary_classification",
+  data = dataset,
+  target = "class"
+)
+
+learner <- makeLearner(
+  "classif.randomForest",
+  predict.type = "prob"
+)
+
+param_set <- makeParamSet(
+  makeIntegerParam("ntree", lower = 100, upper = 1000), # numero di alberi
+  makeIntegerParam("mtry", lower = 1, upper = 12), # ho max 12 features
+  makeIntegerParam("nodesize", lower = 1, upper = 20), # quanto lungo l'albero
+  makeIntegerParam("maxnodes", lower = 10, upper = 100) # nodi collegati
+)
+
+rdesc <- makeResampleDesc("CV", iters = 10, stratify = TRUE)
+
+mbo_ctrl <- makeMBOControl()
+mbo_ctrl <- setMBOControlTermination(mbo_ctrl, iters = 30)
+mbo_ctrl <- setMBOControlInfill(mbo_ctrl, crit = makeMBOInfillCritEI())
+
+ctrl <- makeTuneControlMBO(
+  mbo.control = mbo_ctrl,
+  mbo.design = generateDesign(n = 10, par.set = param_set)
+)
+
+result <- tuneParams(
+  learner = learner,
+  task = task,
+  resampling = rdesc,
+  measures = list(acc),
+  par.set = param_set,
+  control = ctrl,
+  show.info = TRUE
+)
+
+print(result)
+cat("\nBest Hyperparameters:\n")
+print(result$x)
+cat("\nBest Performance:\n")
+print(result$y)
+
+final_learner <- setHyperPars(learner, par.vals = result$x) 
+
+final_model <- mlr::train(final_learner, task) 
+
+opt_path <- as.data.frame(result$opt.path) 
+
+
+ggplot(opt_path, aes(x = seq_along(acc.test.mean), y = acc.test.mean)) +
+  geom_line(color = "blue", alpha = 0.6) +
+  geom_point(color = "darkblue", size = 3) +
+  geom_hline(yintercept = max(opt_path$acc.test.mean), 
+             linetype = "dashed", color = "red") +
+  labs(title = "Random Forest Bayesian Optimization Progress",
+       x = "Iteration", y = "Accuracy") +
+  theme_minimal()
+
+ggplot(opt_path, aes(x = ntree, y = mtry)) +
+  geom_point(aes(color = acc.test.mean, size = acc.test.mean), alpha = 0.7) +
+  scale_color_gradient(low = "lightblue", high = "darkblue") +
+  labs(
+    title = "Random Forest Parameter Space Exploration",
+    x = "Number of Trees",
+    y = "mtry",
+    color = "Accuracy"
+  ) +
+  guides(size = "none") +
+  theme_minimal()
+
+ggplot(opt_path, aes(x = nodesize, y = acc.test.mean)) +
+  geom_point(aes(color = mtry), size = 3) +
+  geom_smooth(method = "loess", se = TRUE, color = "darkblue") +
+  labs(title = "Effect of Node Size on Accuracy",
+       x = "Node Size", y = "Accuracy") +
+  theme_minimal()
+
+#### FINAL MODEL PERFORMANCE ####
+
+preds <- predict(final_model, newdata = testset)$data$response # <- TESTSET
+df_preds <- data.frame(Actual = test_label, Predicted = preds)
+
+conf_mat <- table(Predicted = df_preds$Predicted, Actual = df_preds$Actual)
+
+conf_mat_df <- as.data.frame(conf_mat)
+
+class_levels <- levels(conf_mat_df$Actual)
+conf_mat_df$Actual    <- factor(conf_mat_df$Actual,    levels = rev(class_levels))
+conf_mat_df$Predicted <- factor(conf_mat_df$Predicted, levels = class_levels)
+
+ ggplot(conf_mat_df, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = Freq), size = 8, color = "white") +
+  scale_fill_gradient(low = "skyblue2", high = "darkblue", name = "Freq") +
+  coord_fixed() +
+  
+  scale_x_discrete(labels = c("X.1" = "-1", "X1" = "1")) +
+  scale_y_discrete(labels = c("X1" = "1", "X.1" = "-1")) + 
+  labs(
+    title = "Confusion matrix Random Forest - BO (Test Set)",
+    x = "Predicted class",
+    y = "Actual class"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold", hjust = 0.5), 
+    legend.position = "right"
+  )
+```
+
+## 6. Variable Selection
+
+```{r}
+set.seed(1)
+dataset <- O_DS
+X <- as.matrix(dataset[, -ncol(dataset)])
+y <- dataset$class
+y <- ifelse(y == -1, 0, 1) # -1 -> 0 ; 1 -> 1
+
+cv <- cv.glmnet(X, y, family = "binomial", alpha = 1, nfolds = 10)
+fit <- cv$glmnet.fit
+beta_mat   <- as.matrix(fit$beta)
+lambdas    <- fit$lambda 
+feat_names <- rownames(beta_mat)
+
+df <- as.data.frame(beta_mat)
+colnames(df) <- paste0("lam_", seq_along(lambdas))
+df$feature <- feat_names
+
+df_long <- df |>
+  pivot_longer(cols = starts_with("lam_"),
+               names_to = "step", values_to = "coef") |>
+  mutate(idx        = as.integer(sub("lam_", "", step)),
+         lambda     = lambdas[idx],
+         log_lambda = log(lambda)) |>
+  select(-idx) |>
+  group_by(feature) |>
+  filter(any(coef != 0)) |>
+  ungroup()
+
+df_labels <- df_long %>%
+  group_by(feature) %>%
+  filter(lambda == min(lambda[coef != 0])) %>%
+  ungroup()
+
+ggplot(df_long, aes(x = log_lambda, y = coef, color = feature)) +
+  geom_line(linewidth = 1.2) +
+  geom_vline(xintercept = log(cv$lambda.min), linetype = 2, color = "black") +
+  geom_vline(xintercept = log(cv$lambda.1se), linetype = 2, color = "grey40") +
+  labs(
+    title = "LASSO Coefficient Paths (One Color per Variable)",
+    x = "log(lambda)",
+    y = "Coefficient",
+    color = "Feature"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold")
+  ) +
+  expand_limits(x = min(df_long$log_lambda) - 0.4)
+```
+
+\
+\
+\
+\
+
+### 6.1 KNN - BO with selected variable
+
+```{r}
+set.seed(1)
+dataset <- ds[ixs$Resample1,c(1,2,ncol(ds)) ] # 90%
+testset <- ds[-ixs$Resample1,c(1,2,ncol(ds)) ] # 10%
+par.set <- makeParamSet(makeIntegerParam("k", lower = 1, upper = 51))
+
+task <- makeClassifTask(data = dataset , target = "class")
+ctrl <- makeMBOControl()
+ctrl <- setMBOControlTermination(ctrl, iters = 30)
+tune.ctrl <- makeTuneControlMBO(mbo.control = ctrl)
+
+lrn <- makeLearner("classif.knn")
+
+# tuning
+run <- tuneParams(
+  learner     = lrn,
+  task        = task,
+  resampling  = cv3,
+  measures    = acc,
+  par.set     = par.set,
+  control     = tune.ctrl,
+  show.info   = TRUE
+)
+
+ys <- getOptPathY(run$opt.path)
+df <- data.frame(
+  iter = seq_along(ys),
+  value = ys,
+  best_so_far = cummax(ys)
+)
+p1 <- ggplot(df, aes(x = iter)) +
+  geom_line(aes(y = value), color = "gray", linewidth = 1.2) +
+  geom_point(aes(y = value), color = "black", size = 2) +
+  geom_step(aes(y = best_so_far), color = "blue", linewidth = 1.4) +
+  labs(
+    title = "Optimization Path KNN - BO",
+    x = "Iteration",
+    y = "Objective Value"
+  ) +
+  theme_minimal(base_size = 14) + 
+  theme(plot.title = element_text(face = "bold"))
+
+ks_df <- as.data.frame(getOptPathX(run$opt.path))
+iters <- seq_len(nrow(ks_df))
+accs <- getOptPathY(run$opt.path)
+
+dfk <- data.frame(
+  accuracy = ys,
+  k = ks_df$k
+)
+dfk_sorted <- dfk %>% arrange(k)
+
+miglior_k_bo <- run$x$k
+final_learner <- setHyperPars(lrn, par.vals = run$x)
+final_model <- mlr::train(final_learner, task)
+
+# Predict on test set
+preds <- predict(final_model, newdata = testset)$data$response
+
+# Confusion matrix
+conf_matrix <- confusionMatrix(preds, testset$class)
+conf_mat_df <- as.data.frame(conf_matrix$table)
+colnames(conf_mat_df) <- c("Predicted", "Actual", "Freq")
+
+# Get class levels from testset
+current_class_levels <- levels(testset$class)
+conf_mat_df$Actual <- factor(conf_mat_df$Actual, levels = rev(current_class_levels))
+conf_mat_df$Predicted <- factor(conf_mat_df$Predicted, levels = current_class_levels)
+
+# Plot confusion matrix
+p2 <- ggplot(conf_mat_df, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = Freq), size = 8, color = "white") +
+  scale_fill_gradient(low = "skyblue2", high = "darkblue", name = "Freq") +
+  coord_fixed() +
+  labs(
+    title = paste0("Confusion Matrix KNN - BO (Lasso Selection)\n (Test Set) (k = ", miglior_k_bo, ") - Test Set"),
+    x = "Predicted Class",
+    y = "Actual Class"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+grid.arrange(arrangeGrob(p1, bottom = "(a) Opt. Path "),
+             arrangeGrob(p2, bottom = "(b) Confusion Matrix"), ncol = 2, nrow = 1)
+
+
+```
+
+### 6.2 SVM - BO with selected variables
+
+```{r}
+set.seed(2)
+dataset <- ds[ixs$Resample1,c(1,2,ncol(ds)) ] # 90%
+testset <- ds[-ixs$Resample1,c(1,2,ncol(ds)) ] # 10%
+task <- makeClassifTask(data = dataset, target = "class")
+
+learner <- makeLearner(
+  "classif.svm",
+  predict.type = "prob"
+)
+
+par.set <- makeParamSet(makeNumericParam("cost", lower = -2, upper = 2, trafo = function(x) 10 ^x),
+                        makeDiscreteParam("kernel", values = c("linear", "radial")),
+                        makeNumericParam("gamma", lower = -4, upper = 4, trafo = function(x) 10 ^x, requires = quote(kernel == "radial")))
+
+ctrl <- makeMBOControl()
+ctrl <- setMBOControlTermination(ctrl, iters = 30)
+tune.ctrl <- makeTuneControlMBO(mbo.control = ctrl) 
+
+run <- tuneParams(learner = learner, 
+                  task = task, 
+                  resampling = cv3, 
+                  measures = acc, 
+                  par.set = par.set, 
+                  control = tune.ctrl)
+
+ys <- getOptPathY(run$opt.path)
+
+df <- data.frame(
+  iter = seq_along(ys),
+  value = ys,
+  best_so_far = cummax(ys)
+)
+
+p1 <- ggplot(df, aes(x = iter)) +
+  geom_line(aes(y = value), color = "grey", linewidth = 1.2) +
+  geom_point(aes(y = value), color = "black", size = 2) +
+  geom_step(aes(y = best_so_far), color = "blue", linewidth = 1.4) +
+  labs(
+    title = "Optimization Path SVM - BO (Lasso Selection)",
+    x = "Iteration",
+    y = "Objective Value"
+  ) +
+  theme_minimal(base_size = 14) + 
+  theme(plot.title = element_text(face = "bold"))
+
+final_learner <- setHyperPars(learner, par.vals = run$x)
+final_model <- mlr::train(final_learner, task)
+
+preds <- predict(final_model, newdata = testset[,-ncol(testset)])$data$response
+df_preds <- data.frame(Actual = testset$class, Predicted = preds)
+
+levels(df_preds$Actual) <- make.names(levels(df_preds$Actual))
+levels(df_preds$Predicted) <- make.names(levels(df_preds$Predicted))
+
+conf_mat <- table(Predicted = df_preds$Predicted, Actual = df_preds$Actual)
+conf_mat_df <- as.data.frame(conf_mat)
+
+current_levels_actual <- levels(conf_mat_df$Actual)
+current_levels_predicted <- levels(conf_mat_df$Predicted)
+
+conf_mat_df$Actual    <- factor(conf_mat_df$Actual, levels = rev(c("X.1", "X1")))
+conf_mat_df$Predicted <- factor(conf_mat_df$Predicted, levels = c("X.1", "X1"))
+
+
+p2 <- ggplot(conf_mat_df, aes(x = Predicted, y = Actual, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = Freq), size = 8, color = "white") +
+  scale_fill_gradient(low = "skyblue2", high = "darkblue", name = "Freq") + # Aggiunto name
+  coord_fixed() +
+  labs(
+    title = paste0("Confusion matrix SVM - BO (Lasso Selection)\n (Test Set)\n",
+                   "C = ", round(run$x$cost, 3), " | γ = ", round(run$x$gamma, 3)),
+    x = "Predicted class", 
+    y = "Actual class"
+  ) +
+  scale_x_discrete(labels = c("X.1" = "-1", "X1" = "1")) +
+  scale_y_discrete(labels = c("X1" = "1", "X.1" = "-1")) + 
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid = element_blank(),
+    plot.title = element_text(face = "bold"),
+    legend.position = "right"
+  )
+grid.arrange(arrangeGrob(p1, bottom = "(a) Opt. Path "),
+             arrangeGrob(p2, bottom = "(b) Confusion Matrix"), ncol = 2, nrow = 1)
+
+svm_model <- getLearnerModel(final_model)
+n_sv <- svm_model$tot.nSV
+n_train <- getTaskSize(task)
+perc_sv <- n_sv / n_train * 100
+n_sv
+perc_sv
+
+```
+
+## Plot Finale
+
+```{r}
+data_modelli <- data.frame(
+  Modello = c(
+    "KNN Hold Out", 
+    "KNN Cross Validation", 
+    "KNN Bayesian Optimization",
+    "SVM Cross Validation",
+    "SVM Bayesian Optimization", 
+    "Gaussian Process", 
+    "Random Forest Bayesian Optimization",
+    "KNN Bayesian Optimization (Lasso) ",
+    "SVM Bayesian Optimization (Lasso) "
+  ),
+  Accuracy = c(
+    0.64, 0.70, 0.69, 0.685, 0.671, 1.00, 1.00, 1.00, 1.00
+  )
+)
+
+# Converti in factor con l'ordine che vuoi
+data_modelli$Modello <- factor(data_modelli$Modello, 
+                                levels = c(
+                                  "KNN Hold Out", 
+                                  "KNN Cross Validation", 
+                                  "KNN Bayesian Optimization",
+                                  "SVM Cross Validation",
+                                  "SVM Bayesian Optimization", 
+                                  "Gaussian Process", 
+                                  "Random Forest Bayesian Optimization",
+                                  "KNN Bayesian Optimization (Lasso) ",
+                                  "SVM Bayesian Optimization (Lasso) "
+                                ))
+
+ggplot(data_modelli, aes(x = Modello, y = Accuracy)) +
+  geom_bar(stat = "identity", aes(fill = Accuracy)) + 
+  labs(y = "Accuracy", 
+       title = "Accuracy level compared between all the proposed models", 
+       x = "Models") +
+  scale_y_continuous(limits = c(0, 1.00), breaks = seq(0, 1.00, 0.25)) +
+  scale_fill_gradient(low = "skyblue2", high = "darkblue") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "none",
+        panel.background = element_rect(fill = "white"),
+        panel.grid.major.y = element_line(color = "gray80"),
+        panel.grid.major.x = element_blank()
+  )
+
+```
