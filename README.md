@@ -25,7 +25,8 @@ This README describes the Quarto document [ML_project_final.qmd](ML_project_fina
 
 The final section of the Quarto document compares all proposed models using test accuracy.
 
-![Accuracy Comparison Across Models](README_assets/accuracy_comparison.png)
+<img width="738" height="372" alt="Screenshot 2026-05-24 at 22 58 33" src="https://github.com/user-attachments/assets/3387bd05-f217-431b-9e19-9f9a0a27c778" />
+
 
 | Model | Accuracy |
 |---|---:|
@@ -73,13 +74,3 @@ quarto render ML_project_final.qmd
 ```
 
 The current final exported report is available as [ML_Report_finale finale.pdf](ML_Report_finale%20finale.pdf).
-
-## Note On File Paths
-
-The Quarto document currently uses absolute local paths for the dataset, for example:
-
-```r
-readRDS("/Users/francescofavagrossa/Desktop/Machine Learning/ML Project/Dataset/TicTacToe_dataset.RDS")
-```
-
-If the project is moved to another machine or folder, update those paths to match the new location.
