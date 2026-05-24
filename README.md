@@ -2,9 +2,11 @@
 
 This README describes the Quarto document [ML_project_final.qmd](ML_project_final.qmd), which contains the full machine learning analysis and final model comparison for the Tic-Tac-Toe binary classification project.
 
-## Document Preview
 
-![ML Project Workflow](README_assets/project_workflow.png)
+
+
+<img width="357" height="293" alt="Screenshot 2026-05-24 at 22 57 30" src="https://github.com/user-attachments/assets/3e3c0dda-83c3-462b-a9c8-b68539a7525f" />
+
 
 ## What The Quarto Document Contains
 
